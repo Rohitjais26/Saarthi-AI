@@ -17,6 +17,7 @@ type KPIState = {
   dropout_rate: number;
   event_counts: Record<string, number>;
   channel_effectiveness: Record<string, ChannelMetrics>;
+  campaign_effectiveness?: Record<string, { sent: number; replied: number; failed: number }>;
 };
 
 type OptimizationState = {
@@ -124,6 +125,56 @@ function Sparkline({ values, color }: { values: number[]; color: string }) {
   );
 }
 
+type FunnelStage = {
+  label: string;
+  value: number;
+  color: string;
+};
+
+function FunnelChart({ stages }: { stages: FunnelStage[] }) {
+  const width = 520;
+  const height = 250;
+  const segmentHeight = height / stages.length;
+  const max = Math.max(...stages.map((s) => s.value), 1);
+
+  return (
+    <svg className="funnel-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="conversion funnel">
+      {stages.map((stage, idx) => {
+        const next = stages[idx + 1]?.value ?? Math.max(stage.value * 0.78, 1);
+        const topRatio = stage.value / max;
+        const bottomRatio = next / max;
+        const center = width * 0.36;
+        const maxHalf = width * 0.3;
+        const y0 = idx * segmentHeight + 4;
+        const y1 = (idx + 1) * segmentHeight - 4;
+        const xL0 = center - maxHalf * topRatio;
+        const xR0 = center + maxHalf * topRatio;
+        const xL1 = center - maxHalf * bottomRatio;
+        const xR1 = center + maxHalf * bottomRatio;
+        const pct = max > 0 ? ((stage.value / max) * 100).toFixed(1) : '0.0';
+        return (
+          <g key={stage.label}>
+            <polygon
+              points={`${xL0},${y0} ${xR0},${y0} ${xR1},${y1} ${xL1},${y1}`}
+              fill={stage.color}
+              opacity={0.88}
+            />
+            <text x={center} y={y0 + (y1 - y0) / 2 + 4} textAnchor="middle" className="funnel-label">
+              {stage.label}
+            </text>
+            <text x={width * 0.78} y={y0 + (y1 - y0) / 2 - 2} textAnchor="end" className="funnel-value">
+              {stage.value}
+            </text>
+            <text x={width * 0.78} y={y0 + (y1 - y0) / 2 + 14} textAnchor="end" className="funnel-pct">
+              {pct}%
+            </text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
 export default function Dashboard() {
   const [kpis, setKpis] = useState<KPIState | null>(null);
   const [coverage, setCoverage] = useState<CoverageState | null>(null);
@@ -144,6 +195,7 @@ export default function Dashboard() {
   const [sortDesc, setSortDesc] = useState(true);
   const [simLeads, setSimLeads] = useState(800);
   const [simLift, setSimLift] = useState(5);
+  const [presentationMode, setPresentationMode] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -238,15 +290,51 @@ export default function Dashboard() {
     return { replyRate, replies, enroll };
   }, [kpis?.enrollment_rate, kpis?.reply_rate, simLeads, simLift]);
 
+  const activeView: ViewMode = presentationMode ? 'overview' : view;
+
+  const funnelStages = useMemo<FunnelStage[]>(() => {
+    const sent = Math.max(kpis?.reach ?? 0, 0);
+    const replied = Math.round(sent * (kpis?.reply_rate ?? 0));
+    const enrolled = Math.round(sent * (kpis?.enrollment_rate ?? 0));
+    const retained = Math.max(Math.round(enrolled * (1 - (kpis?.dropout_rate ?? 0))), 0);
+    return [
+      { label: 'Reached', value: sent, color: '#0f7c90' },
+      { label: 'Replied', value: replied, color: '#1f8f5c' },
+      { label: 'Enrolled', value: enrolled, color: '#eb7c2b' },
+      { label: 'Retained', value: retained, color: '#7056b3' },
+    ];
+  }, [kpis?.dropout_rate, kpis?.enrollment_rate, kpis?.reach, kpis?.reply_rate]);
+
+  const campaignCards = useMemo(() => {
+    const raw = Object.entries(kpis?.campaign_effectiveness ?? {}).map(([id, metrics]) => {
+      const sent = metrics.sent || 0;
+      const replied = metrics.replied || 0;
+      const failed = metrics.failed || 0;
+      const replyRate = sent ? replied / sent : 0;
+      const failureRate = sent ? failed / sent : 0;
+      const scoreValue = Math.round((Math.min(sent / 50, 1) * 0.2 + replyRate * 0.6 + (1 - failureRate) * 0.2) * 100);
+      return {
+        id,
+        sent,
+        replied,
+        failed,
+        replyRate,
+        failureRate,
+        scoreValue,
+      };
+    });
+    return raw.sort((a, b) => b.scoreValue - a.scoreValue).slice(0, 6);
+  }, [kpis?.campaign_effectiveness]);
+
   return (
-    <div className="dashboard-shell">
+    <div className={`dashboard-shell ${presentationMode ? 'presentation' : ''}`}>
       <div className="ambient ambient-one" />
       <div className="ambient ambient-two" />
       <div className="container">
         <section className="hero reveal">
           <div>
-            <p className="eyebrow">Outreach Control Room</p>
-            <h1>Automated Outreach and Enrollment Dashboard</h1>
+            <p className="eyebrow">Saarthi Ai Agent</p>
+            <h1>Saarthi Ai - Automated Outreach and Enrollment Dashboard</h1>
             <p className="hero-copy">Advanced command view for data integration, targeting, campaign execution, onboarding automation, and optimization.</p>
             <div className="status-row">
               <span className={`pill ${kpis ? 'ok' : 'warn'}`}>{kpis ? 'Backend Connected' : 'Waiting For Data'}</span>
@@ -259,6 +347,9 @@ export default function Dashboard() {
               <button className="btn btn-ghost" onClick={refresh}>Refresh Metrics</button>
               <button className="btn btn-primary" onClick={runDemo} disabled={running}>{running ? 'Running Pipeline...' : 'Run Full Pipeline Demo'}</button>
               <button className="btn btn-ghost" onClick={exportSnapshot}>Export Snapshot</button>
+              <button className="btn btn-ghost" onClick={() => setPresentationMode((prev) => !prev)}>
+                {presentationMode ? 'Exit Presentation' : 'Presentation Mode'}
+              </button>
             </div>
             <div className="inline-controls">
               <label className="switch"><input type="checkbox" checked={autoRefresh} onChange={(e) => setAutoRefresh(e.target.checked)} /><span>Auto refresh</span></label>
@@ -267,15 +358,17 @@ export default function Dashboard() {
           </div>
         </section>
 
-        <section className="toolbar reveal">
-          <button className={`tab ${view === 'overview' ? 'active' : ''}`} onClick={() => setView('overview')}>Overview</button>
-          <button className={`tab ${view === 'operations' ? 'active' : ''}`} onClick={() => setView('operations')}>Operations</button>
-          <button className={`tab ${view === 'raw' ? 'active' : ''}`} onClick={() => setView('raw')}>Raw Data</button>
-        </section>
+        {!presentationMode && (
+          <section className="toolbar reveal">
+            <button className={`tab ${activeView === 'overview' ? 'active' : ''}`} onClick={() => setView('overview')}>Overview</button>
+            <button className={`tab ${activeView === 'operations' ? 'active' : ''}`} onClick={() => setView('operations')}>Operations</button>
+            <button className={`tab ${activeView === 'raw' ? 'active' : ''}`} onClick={() => setView('raw')}>Raw Data</button>
+          </section>
+        )}
 
         {error && <div className="card error reveal">{error}</div>}
 
-        {view === 'overview' && (
+        {activeView === 'overview' && (
           <>
             <section className="kpi-grid reveal">
               <KPI label="Reach" value={kpis?.reach ?? 0} note="Outbound successful sends" tone="accent" />
@@ -321,10 +414,39 @@ export default function Dashboard() {
               <article className="card panel"><h3>Enrollment Trend</h3><Sparkline values={history.map((h) => h.enroll)} color="#eb7c2b" /></article>
               <article className="card panel"><h3>Dropout Trend</h3><Sparkline values={history.map((h) => h.dropout)} color="#bd7b12" /></article>
             </section>
+
+            <section className="funnel-grid reveal">
+              <article className="card panel">
+                <h3>Funnel View</h3>
+                <FunnelChart stages={funnelStages} />
+              </article>
+              <article className="card panel">
+                <h3>Campaign Comparison</h3>
+                <div className="campaign-cards">
+                  {campaignCards.length === 0 && <p className="caption">Run campaigns to see comparison cards.</p>}
+                  {campaignCards.map((campaign) => (
+                    <div key={campaign.id} className="campaign-card">
+                      <div className="campaign-head">
+                        <strong>{campaign.id}</strong>
+                        <span className="campaign-score">{campaign.scoreValue}</span>
+                      </div>
+                      <div className="campaign-stats">
+                        <span>Sent {campaign.sent}</span>
+                        <span>Reply {pct(campaign.replyRate)}</span>
+                        <span>Fail {pct(campaign.failureRate)}</span>
+                      </div>
+                      <div className="campaign-bar">
+                        <span style={{ width: `${campaign.scoreValue}%` }} />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </article>
+            </section>
           </>
         )}
 
-        {view === 'operations' && (
+        {activeView === 'operations' && (
           <section className="ops-grid reveal">
             <article className="card panel wide">
               <div className="panel-head">
@@ -371,7 +493,7 @@ export default function Dashboard() {
           </section>
         )}
 
-        {view === 'raw' && (
+        {activeView === 'raw' && (
           <section className="raw-grid reveal">
             <article className="card panel"><h3>KPI Payload</h3><pre>{JSON.stringify(kpis ?? {}, null, 2)}</pre></article>
             <article className="card panel"><h3>Coverage Payload</h3><pre>{JSON.stringify(coverage ?? {}, null, 2)}</pre></article>
