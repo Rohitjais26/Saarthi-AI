@@ -14,3 +14,6 @@ export default function KPI({ label, value, note, tone = 'info' }: Props) {
     </div>
   );
 }
+
+
+
